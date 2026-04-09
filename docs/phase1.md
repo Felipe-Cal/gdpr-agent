@@ -2,7 +2,7 @@
 
 Phase 1 builds the core of the GDPR Legal Analyst Agent: a Retrieval Augmented Generation (RAG) pipeline that lets you ask natural-language questions about GDPR documents and receive grounded, cited answers.
 
-**Frameworks learned:** BigQuery Vector Search, Vertex AI `text-embedding-004`, Gemini 1.5 Pro, LangChain LCEL
+**Frameworks learned:** BigQuery Vector Search, Vertex AI `text-embedding-004`, Gemini 2.5 Flash Lite, LangChain LCEL
 
 ---
 
@@ -54,7 +54,7 @@ Phase 1 builds the core of the GDPR Legal Analyst Agent: a Retrieval Augmented G
 │                  human:  the original question)                         │
 │                         │                                               │
 │                         ▼                                               │
-│                 ChatVertexAI (Gemini 1.5 Pro)                           │
+│                 ChatVertexAI (Gemini 2.5 Flash Lite)                    │
 │                 temperature=0, max_tokens=2048                          │
 │                         │                                               │
 │                         ▼                                               │
@@ -163,7 +163,8 @@ For a learning project with occasional queries, BigQuery is unambiguously the ri
 All GCP calls in this project are pinned to `europe-west4` (Netherlands):
 
 - The BigQuery dataset is created in `europe-west4`
-- Vertex AI embedding and generative model calls go to the `europe-west4` regional endpoint
+- Vertex AI embedding calls use the `europe-west4` regional endpoint (`GCP_REGION`)
+- Gemini calls use `LLM_REGION`, also set to `europe-west4` — this is a separate setting because model availability varies by region. If a model isn't available in your preferred region you can point `LLM_REGION` at another EU region (e.g. `europe-west1`) without moving your data.
 - Data processed by these services never leaves EU infrastructure
 
 **Why this matters:** GDPR Chapter V (Articles 44–49) restricts the transfer of personal data to third countries. If your AI pipeline sends EU personal data to a US-region API endpoint, you have a potential cross-border transfer issue that requires legal justification (adequacy decision, SCCs, etc.). Keeping everything in `europe-west4` is the simplest baseline control — no transfer, no problem.
@@ -183,10 +184,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     gcp_project_id: str
-    gcp_region: str = "europe-west4"
+    gcp_region: str = "europe-west4"   # BigQuery + embeddings
+    llm_region: str = "europe-west4"   # Gemini — can differ if model unavailable in region
     bq_dataset: str = "gdpr_agent"
     bq_table: str = "document_chunks"
-    gemini_model: str = "gemini-1.5-pro"
+    gemini_model: str = "gemini-2.5-flash-lite"
     embedding_model: str = "text-embedding-004"
     chunk_size: int = 1000
     chunk_overlap: int = 200
@@ -376,7 +378,7 @@ Good questions for stress-testing retrieval quality:
 
 **"Walk me through your RAG implementation."**
 
-> "I built a two-stage pipeline. At ingestion time, I use LangChain's `RecursiveCharacterTextSplitter` to chunk PDFs into 1000-character overlapping segments, embed them with Google's `text-embedding-004` (768 dimensions), and store them in BigQuery. At query time, I embed the user's question with the same model, run `VECTOR_SEARCH()` in BigQuery to retrieve the top-6 most similar chunks, inject those into a ChatPromptTemplate, and call Gemini 1.5 Pro via Vertex AI. The whole chain is composed with LCEL using pipe syntax, which makes it easy to reason about data flow and swap components."
+> "I built a two-stage pipeline. At ingestion time, I use LangChain's `RecursiveCharacterTextSplitter` to chunk PDFs into 1000-character overlapping segments, embed them with Google's `text-embedding-004` (768 dimensions), and store them in BigQuery. At query time, I embed the user's question with the same model, run `VECTOR_SEARCH()` in BigQuery to retrieve the top-6 most similar chunks, inject those into a ChatPromptTemplate, and call Gemini 2.5 Flash Lite via Vertex AI. The whole chain is composed with LCEL using pipe syntax, which makes it easy to reason about data flow and swap components. I chose Flash Lite over Pro for this learning project because it's ~17x cheaper per token with acceptable quality for Q&A — in production I'd evaluate Flash and Pro against a golden dataset to pick the right cost/quality trade-off."
 
 **"Why BigQuery and not Vertex AI Vector Search?"**
 

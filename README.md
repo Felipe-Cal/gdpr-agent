@@ -16,7 +16,7 @@ The GDPR domain is intentional. Privacy and data sovereignty are first-class con
 
 | # | Feature added | Frameworks learned | Status |
 |---|--------------|-------------------|--------|
-| 1 | RAG Foundation | BigQuery Vector Search, `text-embedding-004`, LangChain LCEL, Gemini 1.5 Pro via Vertex AI | ✅ Built |
+| 1 | RAG Foundation | BigQuery Vector Search, `text-embedding-004`, LangChain LCEL, Gemini 2.5 Flash Lite via Vertex AI | ✅ Built |
 | 2 | Agentic Workflows | LangGraph, Google Agent Development Kit (ADK), ReAct / reflection patterns | 🔜 Coming |
 | 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | 🔜 Coming |
 | 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | 🔜 Coming |
@@ -60,7 +60,7 @@ gdpr-agent/
 
 **`phase1/ingest.py`** — The document pipeline. Loads PDFs and text files, splits them into overlapping ~1000-character chunks, calls the Vertex AI embedding API (`text-embedding-004`) to convert each chunk to a 768-dimensional vector, and stores everything in BigQuery. Run this whenever you add new documents.
 
-**`phase1/chain.py`** — The RAG chain. Uses LangChain LCEL (pipe syntax) to wire together: BigQuery vector retriever → prompt template → Gemini 1.5 Pro → output parser. This is the core "brain" of the agent.
+**`phase1/chain.py`** — The RAG chain. Uses LangChain LCEL (pipe syntax) to wire together: BigQuery vector retriever → prompt template → Gemini 2.5 Flash Lite → output parser. This is the core "brain" of the agent.
 
 **`phase1/main.py`** — A Rich-powered interactive CLI. Accepts a single `--question` flag or drops into an interactive question loop with streaming output.
 
@@ -107,10 +107,11 @@ cp .env.example .env
 | Variable | Default | What it controls |
 |----------|---------|-----------------|
 | `GCP_PROJECT_ID` | (required) | Your GCP project |
-| `GCP_REGION` | `europe-west4` | Region for all GCP calls — keep in EU for GDPR |
+| `GCP_REGION` | `europe-west4` | Region for BigQuery and embeddings |
+| `LLM_REGION` | `europe-west4` | Region for Gemini calls (can differ from GCP_REGION) |
 | `BQ_DATASET` | `gdpr_agent` | BigQuery dataset name |
 | `BQ_TABLE` | `document_chunks` | BigQuery table for embeddings |
-| `GEMINI_MODEL` | `gemini-1.5-pro` | The generative model |
+| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | The generative model (cheapest current Gemini) |
 | `EMBEDDING_MODEL` | `text-embedding-004` | The embedding model |
 
 ### 4. BigQuery dataset
@@ -151,7 +152,7 @@ Everything in Phase 1 runs as close to $0 as possible. There are no persistent V
 | BigQuery storage | First 10 GB/month free | $0 |
 | BigQuery queries | First 1 TB/month free | $0 |
 | Vertex AI Embeddings (`text-embedding-004`) | ~$0.00002 per 1,000 characters | Cents (one-time ingestion) |
-| Gemini 1.5 Pro | ~$1.25 per 1M input tokens | Cents per session |
+| Gemini 2.5 Flash Lite | ~$0.075 per 1M input tokens | Cents per session |
 | Cloud Storage / networking | Negligible at this scale | ~$0 |
 
 The key architectural choice that keeps costs near zero: BigQuery Vector Search uses `VECTOR_SEARCH()` as a SQL function — there is no persistent endpoint process running and charging you per hour. Vertex AI Vector Search (the alternative) runs a dedicated index server that costs ~$65+/month even when idle. For a learning project, BigQuery is the right choice.
@@ -164,7 +165,7 @@ This section maps each phase to specific competencies that come up in senior GCP
 
 ### Phase 1 — RAG & the Vertex AI / LangChain baseline
 
-- **Vertex AI Embeddings and generative models**: You have hands-on experience calling `text-embedding-004` and Gemini 1.5 Pro, know the API surface, and understand token/character pricing.
+- **Vertex AI Embeddings and generative models**: You have hands-on experience calling `text-embedding-004` and Gemini 2.5 Flash Lite, know the API surface, and understand token/character pricing. You can also explain the model family trade-offs (Flash Lite vs. Flash vs. Pro) in terms of cost and capability.
 - **BigQuery as a vector store**: You can explain `VECTOR_SEARCH()`, the trade-off between BigQuery and Vertex AI Vector Search (serverless vs. persistent endpoint, latency vs. cost), and when you would choose each.
 - **LangChain LCEL**: You understand the Runnable abstraction, pipe composition, `RunnableParallel`, and why this pattern makes chains easy to test and extend. You can explain how LCEL chains map to LangGraph nodes in Phase 2.
 - **RAG architecture**: You can whiteboard the full pipeline — document loading, chunking strategy (why overlapping chunks matter for legal text), embedding, retrieval, prompt construction, generation — and articulate the trade-offs at each step.

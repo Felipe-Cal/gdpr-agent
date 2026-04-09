@@ -107,7 +107,7 @@ def get_chain():
         project_id=settings.gcp_project_id,
         dataset_name=settings.bq_dataset,
         table_name=settings.bq_table,
-        location=settings.llm_region,
+        location=settings.gcp_region,
         embedding=embeddings,
     )
 

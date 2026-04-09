@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     bq_table: str = "document_chunks"
 
     # Models
-    gemini_model: str = "gemini-1.5-pro"
+    gemini_model: str = "gemini-2.0-flash-lite"
     embedding_model: str = "text-embedding-004"
 
     # RAG chunking

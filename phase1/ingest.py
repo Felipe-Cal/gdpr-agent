@@ -93,7 +93,7 @@ def get_vector_store(embeddings: VertexAIEmbeddings) -> BigQueryVectorStore:
     """
     Returns a LangChain BigQueryVectorSearch store.
 
-    BigQueryVectorSearch:
+    BigQueryVectorStore:
     - Stores document text + embeddings in a BigQuery table
     - Uses VECTOR_SEARCH() SQL function for similarity queries — serverless,
       no persistent endpoint running 24/7

@@ -17,7 +17,7 @@ The GDPR domain is intentional. Privacy and data sovereignty are first-class con
 | # | Feature added | Frameworks learned | Status |
 |---|--------------|-------------------|--------|
 | 1 | RAG Foundation | BigQuery Vector Search, `text-embedding-004`, LangChain LCEL, Gemini 2.5 Flash Lite via Vertex AI | ✅ Built |
-| 2 | Agentic Workflows | LangGraph, Google Agent Development Kit (ADK), ReAct / reflection patterns | 🔜 Coming |
+| 2 | Agentic Workflows | LangGraph, Google Agent Development Kit (ADK), ReAct / reflection patterns | ✅ Built |
 | 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | 🔜 Coming |
 | 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | 🔜 Coming |
 | 5 | Fine-tuning | LoRA, PyTorch/XLA, JAX on Cloud TPU, Vertex AI Training | 🔜 Coming |
@@ -44,8 +44,15 @@ gdpr-agent/
 │   ├── chain.py                 # LCEL RAG chain: retriever | prompt | Gemini
 │   └── main.py                  # Interactive CLI to query the agent
 │
+├── phase2/
+│   ├── tools.py                 # Tool definitions: search_gdpr_docs, web_search, get_gdpr_article
+│   ├── graph.py                 # LangGraph ReAct agent with explicit nodes, edges, state
+│   ├── adk_agent.py             # Same agent rebuilt with Google ADK (for comparison)
+│   └── main.py                  # CLI supporting both LangGraph and ADK backends
+│
 ├── docs/
 │   ├── phase1.md                # Deep-dive on Phase 1 architecture and concepts
+│   ├── phase2.md                # Deep-dive on Phase 2: LangGraph, ADK, tools, ReAct
 │   └── phases-overview.md       # Forward-looking plan for all 6 phases
 │
 └── data/
@@ -174,6 +181,8 @@ This section maps each phase to specific competencies that come up in senior GCP
 ### Phase 2 — Agentic frameworks (LangGraph, Google ADK)
 
 - Stateful multi-step agents, tool use, ReAct reasoning loops, and how LangGraph's graph model differs from simple LCEL chains.
+- Built the same agent in both LangGraph (explicit graph) and Google ADK (declarative) — can articulate trade-offs between frameworks.
+- Tool design principles: layered information sources (static lookup → vector search → live web), docstring as API contract.
 
 ### Phase 3 — Observability and evaluation
 

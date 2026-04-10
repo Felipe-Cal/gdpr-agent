@@ -10,6 +10,10 @@ dependencies = [
     "langchain-google-vertexai>=2.0",
     "langchain-google-community[bigquery]>=2.0",
     "langchain-community>=0.3",
+    # Phase 2 — agentic workflows
+    "langgraph>=0.2",
+    "ddgs>=9.0",
+    "google-adk>=0.3",
     # GCP SDKs
     "google-cloud-aiplatform>=1.60",
     "google-cloud-bigquery>=3.20",
@@ -33,4 +37,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["phase1", "setup", "config.py"]
+packages = ["phase1", "phase2", "setup", "config.py"]

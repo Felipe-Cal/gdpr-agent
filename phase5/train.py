@@ -56,7 +56,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Configuration — read from environment (Vertex AI injects these)
 # ---------------------------------------------------------------------------
-MODEL_ID = os.getenv("MODEL_ID", "google/gemma-2-2b-it")
+MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct")
 DATASET_PATH = os.getenv("DATASET_PATH", "data/gdpr_finetune.jsonl")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/tmp/gdpr-lora-adapter")
 GCS_OUTPUT_URI = os.getenv("GCS_OUTPUT_URI", "")   # e.g. gs://my-bucket/phase5/adapter
@@ -68,7 +68,17 @@ MAX_SEQ_LEN = int(os.getenv("MAX_SEQ_LEN", "1024"))
 
 
 def load_dataset_from_jsonl(path: str) -> "Dataset":
-    """Loads the Alpaca-format JSONL file into a HuggingFace Dataset."""
+    """
+    Loads the Alpaca-format JSONL file into a HuggingFace Dataset.
+    Supports local paths and GCS URIs (gs://...).
+    """
+    # If running in Vertex AI and path is a GCS URI, download it first
+    if path.startswith("gs://"):
+        import subprocess
+        local_path = "/tmp/gdpr_finetune.jsonl"
+        subprocess.run(["gsutil", "cp", path, local_path], check=True)
+        path = local_path
+
     records = []
     with open(path) as f:
         for line in f:

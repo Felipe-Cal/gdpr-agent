@@ -32,7 +32,7 @@ def submit_training_job(
     gcs_output_uri: str,
     epochs: int = 3,
     sync: bool = True,
-) -> aiplatform.jobs.CustomTrainingJob:
+) -> CustomTrainingJob:
     """
     Submits a Vertex AI Custom Training Job to fine-tune Gemma-2-2B with LoRA.
 
@@ -49,6 +49,11 @@ def submit_training_job(
         The Vertex AI CustomTrainingJob object.
     """
     vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
+    aiplatform.init(
+        project=settings.gcp_project_id,
+        location=settings.gcp_region,
+        staging_bucket=f"gs://{settings.finetune_gcs_bucket}",
+    )
 
     job = CustomTrainingJob(
         display_name="gdpr-lora-finetune",
@@ -69,9 +74,11 @@ def submit_training_job(
     model = job.run(
         args=[],
         environment_variables={
-            "MODEL_ID": "google/gemma-2-2b-it",
-            "DATASET_PATH": "/gcs/dataset/gdpr_finetune.jsonl",  # GCS FUSE mount
-            "OUTPUT_DIR": "/gcs/output/adapter",
+            # Qwen2.5-1.5B: freely accessible (no HF auth), trains in ~20 min on T4
+            "MODEL_ID": "Qwen/Qwen2.5-1.5B-Instruct",
+            # Pass the full GCS URI — train.py uses gsutil to download it
+            "DATASET_PATH": gcs_dataset_uri,
+            "OUTPUT_DIR": "/tmp/gdpr-lora-adapter",
             "GCS_OUTPUT_URI": gcs_output_uri,
             "EPOCHS": str(epochs),
             "BATCH_SIZE": "4",

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     gke_zone: str = "europe-west4-b"            # EU zone — data stays in Netherlands
 
     # Phase 5 — Fine-tuning
-    finetune_base_model: str = "google/gemma-2-2b-it"   # base model for LoRA
+    finetune_base_model: str = "Qwen/Qwen2.5-1.5B-Instruct"  # freely accessible, no HF auth needed
     finetune_gcs_bucket: str = ""                        # set to your GCS bucket name
 
 

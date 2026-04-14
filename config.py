@@ -51,7 +51,11 @@ class Settings(BaseSettings):
     vllm_endpoint: str = "http://localhost:8000"
     vllm_model: str = "mistral-7b"              # matches --served-model-name in k8s/deployment.yaml
     gke_cluster_name: str = "gdpr-serving"
-    gke_zone: str = "europe-west4-a"            # EU zone — data stays in Netherlands
+    gke_zone: str = "europe-west4-b"            # EU zone — data stays in Netherlands
+
+    # Phase 5 — Fine-tuning
+    finetune_base_model: str = "Qwen/Qwen2.5-1.5B-Instruct"  # freely accessible, no HF auth needed
+    finetune_gcs_bucket: str = ""                        # set to your GCS bucket name
 
 
 settings = Settings()

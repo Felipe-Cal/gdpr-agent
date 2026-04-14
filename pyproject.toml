@@ -37,6 +37,15 @@ dev = [
     "ipython",
     "pytest>=8.0",
 ]
+# Phase 5 — training dependencies (heavy, GPU-only, not needed for inference)
+# Install with: pip install -e ".[train]"
+train = [
+    "peft>=0.10",
+    "trl>=0.8",
+    "bitsandbytes>=0.43",
+    "datasets>=2.18",
+    "accelerate>=0.28",
+]
 
 [build-system]
 requires = ["hatchling"]

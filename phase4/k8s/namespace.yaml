@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gdpr-serving
+  labels:
+    # EU data residency label — used by GKE policy controllers
+    # to enforce that workloads stay in EU node pools.
+    data-residency: eu

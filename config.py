@@ -45,5 +45,13 @@ class Settings(BaseSettings):
     # Phase 3 — Evaluation
     eval_model: str = "gemini-2.0-flash-lite"  # Cheapest model sufficient for LLM-as-judge
 
+    # Phase 4 — Self-hosted serving (vLLM on GKE)
+    # vllm_endpoint: set to the GKE LoadBalancer IP after deployment
+    #   e.g. http://34.90.x.x  (get it with: kubectl get svc -n gdpr-serving)
+    vllm_endpoint: str = "http://localhost:8000"
+    vllm_model: str = "mistral-7b"              # matches --served-model-name in k8s/deployment.yaml
+    gke_cluster_name: str = "gdpr-serving"
+    gke_zone: str = "europe-west4-a"            # EU zone — data stays in Netherlands
+
 
 settings = Settings()

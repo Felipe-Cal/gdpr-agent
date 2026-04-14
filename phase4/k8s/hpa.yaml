@@ -1,0 +1,28 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vllm-mistral
+  namespace: gdpr-serving
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-mistral
+
+  # For a demo / dev cluster we keep exactly 1 replica.
+  # In production: minReplicas=0 (scale to zero) + KEDA for GPU cost savings,
+  # or minReplicas=1 for latency SLAs, maxReplicas based on traffic projections.
+  minReplicas: 1
+  maxReplicas: 3
+
+  metrics:
+    # Scale out when CPU across pods exceeds 70%.
+    # For GPU workloads you'd use a custom metric (DCGM GPU utilisation via
+    # the NVIDIA DCGM Exporter + Prometheus Adapter), but CPU is sufficient
+    # for a demo since vLLM's main CPU load correlates with request throughput.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

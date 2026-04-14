@@ -18,8 +18,8 @@ The GDPR domain is intentional. Privacy and data sovereignty are first-class con
 |---|--------------|-------------------|--------|
 | 1 | RAG Foundation | BigQuery Vector Search, `text-embedding-004`, LangChain LCEL, Gemini 2.5 Flash Lite via Vertex AI | ✅ Built |
 | 2 | Agentic Workflows | LangGraph, Google Agent Development Kit (ADK), ReAct / reflection patterns | ✅ Built |
-| 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | 🔜 Coming |
-| 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | 🔜 Coming |
+| 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | ✅ Built |
+| 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | ✅ Built |
 | 5 | Fine-tuning | LoRA, PyTorch/XLA, JAX on Cloud TPU, Vertex AI Training | 🔜 Coming |
 | 6 | Production MLOps | Vertex AI Pipelines, GKE autoscaling, VPC-SC / CMEK for GDPR | 🔜 Coming |
 
@@ -50,9 +50,28 @@ gdpr-agent/
 │   ├── adk_agent.py             # Same agent rebuilt with Google ADK (for comparison)
 │   └── main.py                  # CLI supporting both LangGraph and ADK backends
 │
+├── phase3/
+│   ├── callbacks.py             # LangSmith + LangFuse tracing backends
+│   ├── eval_dataset.py          # Golden dataset: 10 GDPR Q&A pairs
+│   ├── eval_runner.py           # Vertex AI EvalTask (BYOR mode, custom groundedness metric)
+│   ├── traced_agent.py          # Wrapper adding tracing callbacks to the Phase 2 agent
+│   └── main.py                  # CLI: traced agent + --eval flag
+│
+├── phase4/
+│   ├── serving.py               # LangGraph agent using vLLM endpoint (ChatOpenAI adapter)
+│   ├── benchmarks.py            # Cost comparison: Gemini API vs GKE/vLLM
+│   ├── main.py                  # CLI: --endpoint, --benchmark flags
+│   └── k8s/
+│       ├── namespace.yaml       # Kubernetes namespace
+│       ├── deployment.yaml      # vLLM pod with GPU nodeSelector + AWQ flags
+│       ├── service.yaml         # LoadBalancer service
+│       └── hpa.yaml             # Horizontal Pod Autoscaler
+│
 ├── docs/
 │   ├── phase1.md                # Deep-dive on Phase 1 architecture and concepts
 │   ├── phase2.md                # Deep-dive on Phase 2: LangGraph, ADK, tools, ReAct
+│   ├── phase3.md                # Deep-dive on Phase 3: tracing, eval, LLM-as-judge
+│   ├── phase4.md                # Deep-dive on Phase 4: vLLM, AWQ, GKE, cost benchmarking
 │   └── phases-overview.md       # Forward-looking plan for all 6 phases
 │
 └── data/

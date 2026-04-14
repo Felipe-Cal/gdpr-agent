@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-mistral
+  namespace: gdpr-serving
+  labels:
+    app: vllm-mistral
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-mistral
+  template:
+    metadata:
+      labels:
+        app: vllm-mistral
+    spec:
+      # -----------------------------------------------------------------------
+      # Node placement
+      # nodeSelector pins this pod to the GPU node pool we created.
+      # Without this, Kubernetes might schedule it on a CPU-only node and fail.
+      # -----------------------------------------------------------------------
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+
+      # Tolerations are required because GKE taints GPU nodes to prevent
+      # non-GPU workloads from landing on them (GPU time is expensive).
+      # We explicitly tolerate the taint to opt in.
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      containers:
+        - name: vllm
+          # Official vLLM image — includes CUDA, the vLLM server, and an
+          # OpenAI-compatible /v1/chat/completions endpoint out of the box.
+          image: vllm/vllm-openai:v0.6.3
+
+          # -----------------------------------------------------------------------
+          # vLLM server flags
+          # --model:                the HuggingFace model ID to load
+          # --quantization awq:     use AWQ (Activation-aware Weight Quantization)
+          #                         Mistral-7B-AWQ is pre-quantized; vLLM reads the
+          #                         quantization config from the model checkpoint.
+          #                         AWQ reduces VRAM from ~14GB to ~4GB.
+          # --max-model-len:        maximum context window in tokens
+          # --gpu-memory-utilization: fraction of T4 VRAM to use (T4 = 16GB)
+          # --served-model-name:    the model name clients use in API requests
+          # -----------------------------------------------------------------------
+          args:
+            - "--model"
+            - "TheBloke/Mistral-7B-Instruct-v0.2-AWQ"
+            - "--quantization"
+            - "awq"
+            - "--max-model-len"
+            - "8192"
+            - "--gpu-memory-utilization"
+            - "0.85"
+            - "--served-model-name"
+            - "mistral-7b"
+            - "--port"
+            - "8000"
+
+          ports:
+            - containerPort: 8000
+              name: http
+
+          # -----------------------------------------------------------------------
+          # Resource requests and limits
+          # limits.nvidia.com/gpu: 1  — reserves the entire T4 GPU for this pod
+          # -----------------------------------------------------------------------
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "12Gi"
+              nvidia.com/gpu: "1"
+
+          # -----------------------------------------------------------------------
+          # Liveness / readiness probes
+          # vLLM exposes /health once the model is loaded and ready.
+          # initialDelaySeconds=120 accounts for model download + load time (~2 min).
+          # -----------------------------------------------------------------------
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 10
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            failureThreshold: 3
+
+          # vLLM writes model cache to /tmp/vllm — no persistent volume needed
+          # for a single-node demo, but you'd add a PVC in production.
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+
+      # Shared memory for PyTorch tensor operations across processes
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi

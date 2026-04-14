@@ -38,7 +38,12 @@ def get_callbacks() -> list:
     callbacks = []
 
     # --- LangSmith ---
+    # LangChainTracer reads LANGCHAIN_ENDPOINT from the environment — not from our
+    # settings object. We set it explicitly here so the EU endpoint is always used.
     if settings.langsmith_tracing and settings.langsmith_api_key:
+        import os
+        os.environ["LANGCHAIN_ENDPOINT"] = settings.langsmith_endpoint
+        os.environ["LANGCHAIN_API_KEY"] = settings.langsmith_api_key
         callbacks.append(
             LangChainTracer(project_name=settings.langsmith_project)
         )

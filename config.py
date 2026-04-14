@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # Uses EU endpoint so query data stays in Europe
     langsmith_tracing: bool = False
     langsmith_endpoint: str = "https://eu.api.smith.langchain.com"
-    langsmith_api_key: str | None = Field(default=None, validation_alias="LANGCHAIN_API_KEY")
+    langsmith_api_key: str | None = None
     langsmith_project: str = "gdpr-agent"
 
     # Phase 3 — Observability: LangFuse

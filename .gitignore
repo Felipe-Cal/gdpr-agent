@@ -1,2 +1,12 @@
-__pycache__
+__pycache__/
+*.pyc
 .env
+.venv/
+
+# Generated data — not source, don't commit
+data/gdpr_finetune.jsonl
+
+# Node (shouldn't be here, but just in case)
+node_modules/
+package-lock.json
+package.json

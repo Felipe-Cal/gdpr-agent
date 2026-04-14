@@ -222,9 +222,9 @@ def build_graph():
 graph = build_graph()
 
 
-def ask(question: str, thread_id: str = "default") -> tuple[str, list[str]]:
+def ask(question: str, thread_id: str = "default") -> tuple[str, list[str], str]:
     """
-    Ask the agent a question and return the answer plus tool names used.
+    Ask the agent a question and return the answer, tool names used, and retrieved context.
 
     Args:
         question:  The user's question.
@@ -232,9 +232,13 @@ def ask(question: str, thread_id: str = "default") -> tuple[str, list[str]]:
                    Use a new thread_id to start a fresh conversation.
 
     Returns:
-        (answer_text, list_of_tool_names_called)
+        (answer_text, list_of_tool_names_called, retrieved_context)
+
+        retrieved_context is the raw text returned by search_gdpr_documents —
+        used by the eval runner to score groundedness (did the answer stay
+        faithful to what was actually retrieved?).
     """
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, ToolMessage
 
     config = {"configurable": {"thread_id": thread_id}}
     result = graph.invoke(
@@ -242,9 +246,9 @@ def ask(question: str, thread_id: str = "default") -> tuple[str, list[str]]:
         config=config,
     )
 
-    # Find the final AI response (last AIMessage without tool_calls)
     answer = ""
     tools_used = []
+    context_parts = []
 
     for msg in result["messages"]:
         if isinstance(msg, AIMessage):
@@ -252,8 +256,19 @@ def ask(question: str, thread_id: str = "default") -> tuple[str, list[str]]:
                 tools_used.extend(tc["name"] for tc in msg.tool_calls)
             else:
                 answer = msg.content
+        # Collect context from any factual retrieval tool —
+        # both search_gdpr_documents (BigQuery RAG) and get_gdpr_article (static
+        # article text) return the factual basis that grounds the answer.
+        # web_search is excluded: web snippets are supplementary, not the
+        # primary grounding source for GDPR legal answers.
+        elif isinstance(msg, ToolMessage) and msg.name in (
+            "search_gdpr_documents",
+            "get_gdpr_article",
+        ):
+            context_parts.append(msg.content)
 
-    return answer, tools_used
+    context = "\n\n---\n\n".join(context_parts)
+    return answer, tools_used, context
 
 
 def stream_ask(question: str, thread_id: str = "default"):

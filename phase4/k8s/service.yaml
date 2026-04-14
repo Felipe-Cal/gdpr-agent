@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-mistral
+  namespace: gdpr-serving
+  annotations:
+    # Pin the LoadBalancer to the EU region for data sovereignty.
+    # GCP will provision a regional external IP in europe-west4.
+    cloud.google.com/load-balancer-type: "External"
+spec:
+  # LoadBalancer provisions a GCP L4 Network Load Balancer and assigns a
+  # stable external IP. In production you would add an allowlist (loadBalancerSourceRanges)
+  # to restrict access to your VPC CIDR only — never expose vLLM to the public internet.
+  type: LoadBalancer
+  selector:
+    app: vllm-mistral
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80          # external port clients connect to
+      targetPort: 8000  # vLLM server port inside the container

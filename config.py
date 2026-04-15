@@ -57,5 +57,17 @@ class Settings(BaseSettings):
     finetune_base_model: str = "Qwen/Qwen2.5-1.5B-Instruct"  # freely accessible, no HF auth needed
     finetune_gcs_bucket: str = ""                        # set to your GCS bucket name
 
+    # Phase 6 — Production MLOps
+    # Pipeline root: GCS path where Vertex AI Pipelines stores run artifacts
+    pipeline_root: str = ""                              # e.g. gs://your-bucket/pipeline-runs
+    # KMS key resource name for CMEK (set after running phase6.kms setup)
+    # Format: projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY
+    cmek_key_name: str = ""
+    # Quality gate thresholds — pipeline halts if eval scores fall below these
+    min_groundedness: float = 3.5
+    min_coherence: float = 3.5
+    # Fine-tuning trigger — only trigger if scores drop this low
+    finetune_trigger_threshold: float = 3.0
+
 
 settings = Settings()

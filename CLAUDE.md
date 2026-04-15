@@ -9,8 +9,9 @@ For every task:
    - Use conventional prefixes: `feat/`, `fix/`, `docs/`, `chore/`
    - Example: `feat/phase4-vllm-serving`, `fix/groundedness-metric`, `docs/phase4`
 2. Implement the changes with one or more commits.
+   - **Never add `Co-Authored-By:` or any Claude attribution to commit messages or PR bodies.**
 3. Push the branch: `git push -u origin <branch>`
-4. Open a PR with `gh pr create` — include a summary and test plan.
+4. Open a PR with `gh pr create` — include a summary and test plan. No attribution footer.
 5. **Stop. Do not merge.** The user reviews and merges the PR.
 
 ## Cost discipline

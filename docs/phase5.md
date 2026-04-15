@@ -2,7 +2,7 @@
 
 Phase 5 moves from using a general-purpose model to training a **GDPR-specialised** one. Instead of prompting Mistral or Gemini to answer legal questions, we fine-tune a base model on GDPR Q&A data so it internalises the regulation.
 
-**Frameworks learned:** LoRA / QLoRA, HuggingFace PEFT + TRL, bitsandbytes quantization, Vertex AI Custom Training Jobs, JAX on Cloud TPU (conceptual)
+**Frameworks learned:** LoRA / QLoRA, HuggingFace PEFT + TRL, bitsandbytes quantization, Vertex AI Custom Training Jobs, JAX/Flax on Cloud TPU v4, adapter merging
 
 ---
 
@@ -109,7 +109,22 @@ For larger fine-tuning runs (7B+ models, 100k+ examples), TPUs offer better pric
 
 HuggingFace models can be converted to JAX/Flax with `from_pretrained(..., from_pt=True)`. The training loop then uses `jax.pmap` to shard the model across TPU chips automatically.
 
-For this project we use PyTorch + Vertex AI Training (more straightforward for fine-tuning). In a production scenario with a 70B model, you'd switch to JAX + TPU v4 pods.
+For this project we use PyTorch + Vertex AI Training for fine-tuning (simpler tooling, wider ecosystem). In a production scenario with a 70B model, you'd switch to JAX + TPU v4 pods.
+
+### PyTorch/XLA vs JAX on TPU
+
+Both compile to XLA (Google's accelerated linear algebra compiler), but the path is different:
+
+| | PyTorch/XLA | JAX |
+|---|---|---|
+| **How it works** | Translates PyTorch ops to XLA at runtime — `torch.device("xla")` | Designed for XLA from the ground up — `jax.jit` compiles directly |
+| **Graph breaks** | Python control flow (`if`, `for`) breaks the XLA graph; frequent recompilation | JAX traces through Python to build a static graph; `jax.lax.cond` for conditional ops |
+| **Multi-device** | `xm.optimizer_step()` + `MpDeviceLoader` — imperative | `jax.pmap` — declarative, one line to shard across N chips |
+| **State model** | Stateful (`.backward()`, `.step()`) | Pure functional — `train_step(state, batch) → new_state` |
+| **Ecosystem** | Huge (all HF models, any PyTorch code) | Growing (HF Flax models, `optimum-tpu`) |
+| **When to use** | Existing PyTorch codebase, < 7B params, single-host | New model, TPU pod (> 8 chips), research, JAX-native models |
+
+The key friction with PyTorch/XLA is **graph breaks**: any Python-side `if` or `print` in the training loop forces XLA to materialise results back to CPU, breaking the compiled computation. JAX avoids this by tracing — you write Python, JAX captures the computation graph once, then the compiled kernel runs entirely on the TPU.
 
 ---
 
@@ -130,7 +145,7 @@ What are the lawful bases for processing under GDPR?
 Under GDPR Article 6(1), the six lawful bases are...
 ```
 
-`DataCollatorForCompletionOnlyLM` masks the `### Instruction:` tokens in the loss — the model only learns to predict the `### Response:` portion. Without this, the model wastes capacity memorising the fixed prompt format.
+The training script formats both instruction and response into a single `text` field. `SFTTrainer` applies a causal language model objective over the full sequence — the model sees the instruction as context and learns to predict the response tokens that follow.
 
 ---
 
@@ -139,11 +154,30 @@ Under GDPR Article 6(1), the six lawful bases are...
 ### `phase5/dataset.py`
 Generates ~100 synthetic training examples from the 10 golden eval pairs. Each pair is paraphrased into 8-10 variations using instruction templates ("Explain X under GDPR", "What does GDPR say about X?", etc.). Run standalone — no GCP calls, no cost.
 
+### `phase5/train_local.py`
+Runs LoRA fine-tuning on any machine — no CUDA required. Auto-detects Apple MPS (M1/M2/M3) for ~3-4× speedup over CPU. Uses `Qwen/Qwen2.5-0.5B-Instruct` (0.5B params, ~1GB RAM), skips 4-bit quantization (bitsandbytes is CUDA-only), and trains adapters in FP32. TRL 1.x API: `SFTConfig` (not `TrainingArguments`) with `max_length` and `dataset_text_field` fields; `processing_class=tokenizer` (not `tokenizer=`). Actual result: 540K trainable params, 2m24s on MPS, eval_loss 2.571→2.474.
+
 ### `phase5/train.py`
-The training script. Designed to run inside a Vertex AI Training container but works locally on any CUDA GPU. Uses QLoRA (4-bit NF4 base + BFloat16 adapters) via HuggingFace PEFT + TRL's `SFTTrainer`. Reads config from environment variables (injected by Vertex AI).
+The GPU training script for Vertex AI. Uses QLoRA (4-bit NF4 base + BFloat16 adapters) via HuggingFace PEFT + TRL's `SFTTrainer`. Reads config from environment variables (injected by Vertex AI). Target hardware: NVIDIA T4 (16GB VRAM) — requires GPU quota on the GCP project.
 
 ### `phase5/vertex_job.py`
-Submits `train.py` as a Vertex AI Custom Training Job. Uses the pre-built `pytorch-gpu.2-1` container — no Dockerfile needed. Mounts GCS buckets for dataset input and adapter output.
+Submits `train.py` as a Vertex AI Custom Training Job. Uses the pre-built `pytorch-gpu.2-1` container — no Dockerfile needed. Uploads the dataset to GCS and passes its URI to the job via environment variables.
+
+### `phase5/jax_train.py`
+Full JAX/Flax training loop targeting TPU v4-8. Teaches the JAX programming model:
+- **Functional state**: `train_step` is a pure function — no mutation, returns a new `TrainState`.
+- **`jax.value_and_grad`**: single call computes both the loss and its gradient (forward+backward).
+- **`jax.pmap`**: wraps `train_step` to shard it across all TPU chips; each chip gets a slice of the batch and runs independently.
+- **`lax.pmean`**: collective operation — sums gradients across all chips and divides by device count (equivalent to `DistributedDataParallel` allreduce in PyTorch).
+- **`shard` / `replicate` / `unreplicate`**: Flax utilities to reshape data into `(num_devices, per_device_batch, seq_len)` and broadcast/collapse model state.
+
+The script can be smoke-tested on CPU with `JAX_PLATFORM_NAME=cpu python -m phase5.jax_train` (slow but validates the logic without TPU hardware).
+
+### `phase5/tpu_job.py`
+Submits `jax_train.py` to Vertex AI Training on a Cloud TPU v4-8 (8 chips, `machine_type="cloud-tpu"`, `accelerator_type="TPU_V4"`, `accelerator_count=8`). Uses the Google-maintained JAX TPU container (`us-docker.pkg.dev/vertex-ai/training/jax-tpu.0-4.py310:latest`) which has `libtpu` pre-installed. No Dockerfile needed. ⚠️ Cost: ~$3.22/hr (expected ~$1.00 total for this dataset).
+
+### `phase5/merge_adapter.py`
+Collapses the LoRA adapter back into the base model weights using `model.merge_and_unload()`. This computes `W' = W + (B @ A) × (α/r)` for every adapted layer, producing a standalone model with zero inference overhead. Use when deploying via vLLM without `--enable-lora`, or pushing to HuggingFace Hub. The merged checkpoint is full-size (~1GB for 0.5B); the adapter (5MB) is no longer needed.
 
 ### `phase5/evaluate.py`
 Runs both the base model and the fine-tuned model through the Phase 3 golden eval dataset and compares scores side by side. Uses the same Vertex AI EvalTask + custom groundedness metric from Phase 3.
@@ -206,8 +240,8 @@ python -m phase5.main evaluate \
 **"What's the difference between LoRA and full fine-tuning architecturally?"**
 > "Full fine-tuning updates the entire weight matrix W. LoRA decomposes the update as ΔW = BA where B and A are much smaller matrices — rank r vs full rank d. For Gemma-2B with hidden size 2048 and r=16, each LoRA pair is 65K parameters vs 4M for the full layer — a 64x reduction. The insight from the LoRA paper is that the weight updates needed for domain adaptation lie in a low-dimensional subspace, so the low-rank approximation loses almost nothing in practice."
 
-**"Why JAX for large-scale training?"**
-> "JAX's main advantage on TPUs is that it compiles the entire training step — forward pass, backward pass, optimizer update — into a single XLA computation that the TPU executes without Python overhead. `jax.pmap` then shards this across TPU chips automatically. For a 70B model across a TPU v4 pod (512 chips), you can't afford Python overhead on every step — you need compiled, device-native execution. HuggingFace's Flax models and the `optimum-tpu` library make this accessible without writing raw XLA."
+**"Why JAX over PyTorch/XLA for large-scale TPU training?"**
+> "Both compile to XLA under the hood, but JAX is designed for it from the ground up. PyTorch/XLA translates PyTorch ops at runtime — any Python control flow in the training loop causes a graph break, materialising results back to CPU and forcing a recompilation. JAX traces through Python once to build a static computation graph, so the compiled kernel runs entirely on the TPU with no Python in the hot path. For multi-chip training, `jax.pmap` shards the training step across all chips in one line, compared to PyTorch/XLA's `MpDeviceLoader` + `xm.optimizer_step()` boilerplate. For a 70B model on a v4 pod (512 chips), you can't afford those Python round-trips."
 
 ---
 

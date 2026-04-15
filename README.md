@@ -98,29 +98,31 @@ gdpr-agent/
 
 **`phase1/ingest.py`** — The document pipeline. Loads PDFs and text files, splits them into overlapping ~1000-character chunks, calls the Vertex AI embedding API (`text-embedding-004`) to convert each chunk to a 768-dimensional vector, and stores everything in BigQuery. Run this whenever you add new documents.
 
-**`phase1/chain.py`** — The RAG chain. Uses LangChain LCEL (pipe syntax) to wire together: BigQuery vector retriever → prompt template → Gemini 2.5 Flash Lite → output parser. This is the core "brain" of the agent.
+**`phase1/chain.py`** — The RAG chain. Uses LangChain LCEL (pipe syntax) to wire together: BigQuery vector retriever → prompt template → Gemini 2.0 Flash Lite → output parser. This is the core "brain" of the agent.
 
 **`phase1/main.py`** — A Rich-powered interactive CLI. Accepts a single `--question` flag or drops into an interactive question loop with streaming output.
 
 ---
 
-## Quick start
+## Setup from scratch
 
-### 1. GCP project setup
+### 1. GCP project
 
 ```bash
-# Create project
+# Create project and link billing in Cloud Console: console.cloud.google.com/billing
 gcloud projects create gdpr-agent-project
 
-# Link billing (required for Vertex AI)
-# Do this in the Cloud Console: console.cloud.google.com/billing
-
-# Enable APIs
-gcloud services enable aiplatform.googleapis.com bigquery.googleapis.com \
+# Enable APIs needed across all phases
+gcloud services enable \
+  aiplatform.googleapis.com \
+  bigquery.googleapis.com \
+  cloudkms.googleapis.com \
+  container.googleapis.com \
+  storage.googleapis.com \
   --project=gdpr-agent-project
 
 # Authenticate (Application Default Credentials — what all GCP SDKs use)
-gcloud auth application-default login
+gcloud auth application-default login --project=gdpr-agent-project
 ```
 
 ### 2. Python environment
@@ -129,71 +131,175 @@ gcloud auth application-default login
 # Requires Python 3.11+
 python -m venv .venv
 source .venv/bin/activate
+
+# Core dependencies (Phases 1–4, 6 inference)
 pip install -e ".[dev]"
+
+# Phase 5 local training (LoRA on CPU/MPS — no GPU required)
+pip install -e ".[train]"
+
+# Phase 6 pipeline compilation
+pip install -e ".[pipelines]"
 ```
 
 ### 3. Configuration
 
 ```bash
 cp .env.example .env
-# Edit .env and set GCP_PROJECT_ID=gdpr-agent-project
-# Everything else has sensible defaults
+# Edit .env — only GCP_PROJECT_ID is required, everything else has defaults
 ```
 
-`.env` values:
+Key variables:
 
 | Variable | Default | What it controls |
-|----------|---------|-----------------|
-| `GCP_PROJECT_ID` | (required) | Your GCP project |
-| `GCP_REGION` | `europe-west4` | Region for BigQuery and embeddings |
-| `LLM_REGION` | `europe-west4` | Region for Gemini calls (can differ from GCP_REGION) |
-| `BQ_DATASET` | `gdpr_agent` | BigQuery dataset name |
-| `BQ_TABLE` | `document_chunks` | BigQuery table for embeddings |
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | The generative model (cheapest current Gemini) |
-| `EMBEDDING_MODEL` | `text-embedding-004` | The embedding model |
+|---|---|---|
+| `GCP_PROJECT_ID` | **(required)** | Your GCP project |
+| `GCP_REGION` | `europe-west4` | BigQuery + embeddings (EU data sovereignty) |
+| `LLM_REGION` | `europe-west1` | Gemini — wider model availability, still EU |
+| `GEMINI_MODEL` | `gemini-2.0-flash-lite` | Generative model (cheapest Gemini) |
+| `EMBEDDING_MODEL` | `text-embedding-004` | 768-dim embedding model |
+| `FINETUNE_GCS_BUCKET` | — | GCS bucket for Phase 5/6 artifacts |
 
-### 4. BigQuery dataset
+### 4. One-time GCP setup
 
 ```bash
+# Create the BigQuery dataset (europe-west4 — EU data sovereignty)
 python -m setup.create_dataset
 ```
 
-### 5. Add documents and ingest
+### 5. Ingest GDPR documents
 
-Drop GDPR PDFs into `data/gdpr_docs/`. Good starting documents:
-- [GDPR full text (EUR-Lex)](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32016R0679)
-- [EDPB guidelines](https://edpb.europa.eu/our-work-tools/general-guidance/guidelines-recommendations-best-practices_en)
-- [ICO guidance](https://ico.org.uk/for-organisations/)
+Drop PDFs into `data/gdpr_docs/`. Good starting documents:
+- GDPR full text (EUR-Lex PDF)
+- EDPB guidelines
+- ICO guidance
 
 ```bash
 python -m phase1.ingest
 ```
 
-### 6. Query the agent
+---
+
+## Running each phase
+
+### Phase 1 — RAG (free)
 
 ```bash
-# Interactive mode
+# Interactive Q&A
 python -m phase1.main
 
 # Single question
 python -m phase1.main --question "What are the lawful bases for processing personal data?"
 ```
 
+### Phase 2 — Agentic (free)
+
+```bash
+# LangGraph ReAct agent (default)
+python -m phase2.main
+
+# Google ADK agent
+python -m phase2.main --backend adk
+```
+
+### Phase 3 — Evaluation (cents per run)
+
+```bash
+# Run the full evaluation suite (LLM-as-judge via Vertex AI)
+python -m phase3.main --eval
+
+# Traced agent (enable LANGSMITH_TRACING=true or LANGFUSE_TRACING=true in .env)
+python -m phase3.main
+```
+
+### Phase 4 — Self-hosted serving (GKE required)
+
+> **⚠️ Billable.** GKE cluster + T4 GPU node: ~$0.35–$0.50/hr. Deploy only when needed.
+
+```bash
+# After deploying vLLM to GKE (see docs/phase4.md):
+python -m phase4.main --endpoint http://<LoadBalancer-IP>
+
+# Cost benchmark: Gemini API vs self-hosted vLLM
+python -m phase4.main --benchmark
+```
+
+### Phase 5 — Fine-tuning
+
+```bash
+# Generate training dataset (free, ~100 GDPR Q&A examples)
+python -m phase5.main dataset
+
+# Train locally on CPU or Apple MPS (~2–15 min, free)
+python -m phase5.train_local
+
+# Merge adapter into base model for zero-overhead inference
+python -m phase5.merge_adapter
+
+# Submit to Vertex AI Training — T4 GPU
+# ⚠️  Cost: ~$0.40 (requires GPU quota increase — see docs/phase5.md)
+python -m phase5.main train --bucket your-gcs-bucket
+
+# Submit to Cloud TPU v4-8
+# ⚠️  Cost: ~$1.00
+python -m phase5.tpu_job --bucket your-gcs-bucket
+```
+
+### Phase 6 — Production MLOps
+
+```bash
+# Compile the Vertex AI Pipeline to YAML (free, no GCP calls)
+python -m phase6.pipeline
+# → phase6/gdpr_pipeline.yaml
+
+# Set up CMEK encryption (~$0.06/month)
+python -m phase6.kms show-commands   # preview gcloud commands
+python -m phase6.kms setup           # create keyring + key
+python -m phase6.kms patch-bq        # enable CMEK on BigQuery dataset
+
+# Apply GKE autoscaling manifests (requires Phase 4 cluster)
+kubectl apply -f phase6/k8s/vpa.yaml
+kubectl apply -f phase6/k8s/pdb.yaml
+
+# Submit pipeline to Vertex AI
+# ⚠️  Cost: ~$0.05 per run (+ ~$0.40 if fine-tuning triggered)
+python -m phase6.submit --bucket your-gcs-bucket
+
+# Add nightly schedule (2am UTC)
+python -m phase6.submit --bucket your-gcs-bucket --schedule
+```
+
 ---
 
-## Cost model
+## Cost summary
 
-Everything in Phase 1 runs as close to $0 as possible. There are no persistent VMs or endpoints.
+| Phase | What runs | Estimated cost |
+|---|---|---|
+| 1 — RAG | BigQuery + Vertex AI Embeddings + Gemini | ~$0 (free tier covers it) |
+| 2 — Agentic | Same as Phase 1 | ~$0 |
+| 3 — Eval | Gemini LLM-as-judge (10 questions) | ~$0.01 per run |
+| 4 — Serving | GKE cluster + T4 GPU node | ~$0.35–$0.50/hr while running |
+| 5 — Fine-tuning (local) | CPU / Apple MPS | $0 |
+| 5 — Fine-tuning (Vertex AI) | T4 GPU, ~45 min | ~$0.40 |
+| 5 — Fine-tuning (TPU v4-8) | Cloud TPU, ~20 min | ~$1.00 |
+| 6 — Pipeline run | Vertex AI managed compute | ~$0.05/run |
+| 6 — CMEK key | Cloud KMS | ~$0.06/month |
 
-| Service | Pricing | Expected cost |
-|---------|---------|---------------|
-| BigQuery storage | First 10 GB/month free | $0 |
-| BigQuery queries | First 1 TB/month free | $0 |
-| Vertex AI Embeddings (`text-embedding-004`) | ~$0.00002 per 1,000 characters | Cents (one-time ingestion) |
-| Gemini 2.5 Flash Lite | ~$0.075 per 1M input tokens | Cents per session |
-| Cloud Storage / networking | Negligible at this scale | ~$0 |
+**Teardown commands** — run these when you're done to stop billing:
 
-The key architectural choice that keeps costs near zero: BigQuery Vector Search uses `VECTOR_SEARCH()` as a SQL function — there is no persistent endpoint process running and charging you per hour. Vertex AI Vector Search (the alternative) runs a dedicated index server that costs ~$65+/month even when idle. For a learning project, BigQuery is the right choice.
+```bash
+# Phase 4: delete GKE cluster
+gcloud container clusters delete gdpr-serving --zone=europe-west4-b --project=YOUR_PROJECT
+
+# Phase 6: delete pipeline schedule (stops nightly runs)
+gcloud ai pipeline-jobs list-schedules --region=europe-west4 --project=YOUR_PROJECT
+gcloud ai pipeline-jobs delete-schedule --region=europe-west4 --project=YOUR_PROJECT <id>
+
+# Phase 6: delete CMEK key (cryptographic erasure of all encrypted data)
+gcloud kms keys versions destroy 1 \
+  --key=gdpr-data-key --keyring=gdpr-agent-keyring \
+  --location=europe-west4 --project=YOUR_PROJECT
+```
 
 ---
 

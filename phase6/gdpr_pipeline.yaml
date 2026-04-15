@@ -1,0 +1,573 @@
+# PIPELINE DEFINITION
+# Name: gdpr-agent-lifecycle
+# Description: Ingest GDPR documents → evaluate retrieval quality → quality gate → conditionally trigger LoRA fine-tuning. Designed for nightly scheduling via Vertex AI Pipelines.
+# Inputs:
+#    bq_dataset: str [Default: 'gdpr_agent']
+#    bq_table: str [Default: 'document_chunks']
+#    embedding_model: str [Default: 'text-embedding-004']
+#    finetune_trigger_threshold: float [Default: 3.0]
+#    gcp_project_id: str
+#    gcp_region: str [Default: 'europe-west4']
+#    gcs_bucket: str [Default: 'your-bucket']
+#    gcs_pdf_uri: str [Default: 'gs://your-bucket/gdpr-docs/']
+#    gemini_model: str [Default: 'gemini-2.0-flash-lite']
+#    min_coherence: float [Default: 3.5]
+#    min_groundedness: float [Default: 3.5]
+components:
+  comp-condition-1:
+    dag:
+      tasks:
+        trigger-finetuning:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-trigger-finetuning
+          inputs:
+            parameters:
+              gcp_project_id:
+                componentInputParameter: pipelinechannel--gcp_project_id
+              gcp_region:
+                componentInputParameter: pipelinechannel--gcp_region
+              gcs_bucket:
+                componentInputParameter: pipelinechannel--gcs_bucket
+          taskInfo:
+            name: trigger-finetuning
+    inputDefinitions:
+      parameters:
+        pipelinechannel--finetune_trigger_threshold:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--gcp_project_id:
+          parameterType: STRING
+        pipelinechannel--gcp_region:
+          parameterType: STRING
+        pipelinechannel--gcs_bucket:
+          parameterType: STRING
+        pipelinechannel--run-evaluation-groundedness_mean:
+          parameterType: NUMBER_DOUBLE
+  comp-ingest-documents:
+    executorLabel: exec-ingest-documents
+    inputDefinitions:
+      parameters:
+        bq_dataset:
+          parameterType: STRING
+        bq_table:
+          parameterType: STRING
+        embedding_model:
+          parameterType: STRING
+        gcp_project_id:
+          parameterType: STRING
+        gcp_region:
+          parameterType: STRING
+        gcs_pdf_uri:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        ingested_count:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+  comp-quality-gate:
+    executorLabel: exec-quality-gate
+    inputDefinitions:
+      parameters:
+        coherence_mean:
+          parameterType: NUMBER_DOUBLE
+        groundedness_mean:
+          parameterType: NUMBER_DOUBLE
+        min_coherence:
+          defaultValue: 3.5
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+        min_groundedness:
+          defaultValue: 3.5
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: BOOLEAN
+  comp-run-evaluation:
+    executorLabel: exec-run-evaluation
+    inputDefinitions:
+      parameters:
+        bq_dataset:
+          parameterType: STRING
+        bq_table:
+          parameterType: STRING
+        gcp_project_id:
+          parameterType: STRING
+        gcp_region:
+          parameterType: STRING
+        gemini_model:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        eval_metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+      parameters:
+        coherence_mean:
+          parameterType: NUMBER_DOUBLE
+        fluency_mean:
+          parameterType: NUMBER_DOUBLE
+        groundedness_mean:
+          parameterType: NUMBER_DOUBLE
+  comp-trigger-finetuning:
+    executorLabel: exec-trigger-finetuning
+    inputDefinitions:
+      parameters:
+        gcp_project_id:
+          parameterType: STRING
+        gcp_region:
+          parameterType: STRING
+        gcs_bucket:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        finetune_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-ingest-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ingest_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-bigquery>=3.20'\
+          \ 'google-cloud-aiplatform>=1.60' 'langchain-text-splitters>=0.3' 'pypdf>=4.0'\
+          \ 'google-cloud-storage>=2.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ingest_documents(\n    gcs_pdf_uri: str,       # gs://bucket/path/to/docs/\
+          \  (trailing slash = folder)\n    gcp_project_id: str,\n    gcp_region:\
+          \ str,\n    bq_dataset: str,\n    bq_table: str,\n    embedding_model: str,\n\
+          \    ingested_count: Output[Metrics],\n) -> None:\n    \"\"\"\n    Download\
+          \ PDFs from GCS, chunk, embed, and upsert into BigQuery.\n\n    This is\
+          \ the same logic as phase1/ingest.py, packaged as a pipeline component.\n\
+          \    Running it here (rather than as a one-off script) means every pipeline\
+          \ run\n    has a versioned, auditable record of exactly which documents\
+          \ were ingested \u2014\n    important for GDPR accountability (Article 5(2):\
+          \ demonstrating compliance).\n\n    Outputs `ingested_count` as a KFP Metrics\
+          \ artifact so the pipeline UI shows\n    the document count for each run\
+          \ without having to read logs.\n    \"\"\"\n    import json\n    from pathlib\
+          \ import Path\n    import tempfile\n\n    from google.cloud import storage,\
+          \ bigquery\n    from langchain_text_splitters import RecursiveCharacterTextSplitter\n\
+          \    from pypdf import PdfReader\n\n    # Download PDFs from GCS to a temp\
+          \ dir\n    gcs_client = storage.Client(project=gcp_project_id)\n    bucket_name,\
+          \ prefix = gcs_pdf_uri.replace(\"gs://\", \"\").split(\"/\", 1)\n    bucket\
+          \ = gcs_client.bucket(bucket_name)\n\n    with tempfile.TemporaryDirectory()\
+          \ as tmpdir:\n        blobs = list(bucket.list_blobs(prefix=prefix))\n \
+          \       pdf_blobs = [b for b in blobs if b.name.endswith(\".pdf\")]\n\n\
+          \        if not pdf_blobs:\n            raise ValueError(f\"No PDFs found\
+          \ at {gcs_pdf_uri}\")\n\n        # Extract text from PDFs\n        splitter\
+          \ = RecursiveCharacterTextSplitter(\n            chunk_size=1000,\n    \
+          \        chunk_overlap=200,\n            separators=[\"\\n\\n\", \"\\n\"\
+          , \" \"],\n        )\n\n        all_chunks = []\n        for blob in pdf_blobs:\n\
+          \            local = Path(tmpdir) / Path(blob.name).name\n            blob.download_to_filename(str(local))\n\
+          \            reader = PdfReader(str(local))\n            text = \"\\n\"\
+          .join(page.extract_text() or \"\" for page in reader.pages)\n          \
+          \  chunks = splitter.split_text(text)\n            all_chunks.extend(\n\
+          \                {\"source\": blob.name, \"chunk_index\": i, \"content\"\
+          : c}\n                for i, c in enumerate(chunks)\n            )\n\n \
+          \       # Embed via Vertex AI\n        import vertexai\n        from vertexai.language_models\
+          \ import TextEmbeddingModel\n\n        vertexai.init(project=gcp_project_id,\
+          \ location=gcp_region)\n        embed_model = TextEmbeddingModel.from_pretrained(embedding_model)\n\
+          \n        BATCH = 250  # API max\n        rows = []\n        for i in range(0,\
+          \ len(all_chunks), BATCH):\n            batch = all_chunks[i:i + BATCH]\n\
+          \            texts = [c[\"content\"] for c in batch]\n            embeddings\
+          \ = embed_model.get_embeddings(texts)\n            for chunk, emb in zip(batch,\
+          \ embeddings):\n                rows.append({\n                    \"source\"\
+          : chunk[\"source\"],\n                    \"chunk_index\": chunk[\"chunk_index\"\
+          ],\n                    \"content\": chunk[\"content\"],\n             \
+          \       \"embedding\": emb.values,\n                })\n\n        # Upsert\
+          \ into BigQuery\n        bq_client = bigquery.Client(project=gcp_project_id)\n\
+          \        table_ref = f\"{gcp_project_id}.{bq_dataset}.{bq_table}\"\n   \
+          \     errors = bq_client.insert_rows_json(table_ref, rows)\n        if errors:\n\
+          \            raise RuntimeError(f\"BigQuery insert errors: {errors}\")\n\
+          \n        ingested_count.log_metric(\"chunks_ingested\", len(rows))\n  \
+          \      ingested_count.log_metric(\"pdfs_processed\", len(pdf_blobs))\n \
+          \       print(f\"Ingested {len(rows)} chunks from {len(pdf_blobs)} PDFs\
+          \ \u2192 {table_ref}\")\n\n"
+        image: python:3.11-slim
+    exec-quality-gate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - quality_gate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef quality_gate(\n    groundedness_mean: float,\n    coherence_mean:\
+          \ float,\n    min_groundedness: float = 3.5,\n    min_coherence: float =\
+          \ 3.5,\n) -> bool:\n    \"\"\"\n    Hard stop if quality metrics fall below\
+          \ thresholds.\n\n    Returning False causes any downstream Condition block\
+          \ to skip, so the\n    fine-tuning job is never triggered on a degraded\
+          \ retriever. The component\n    itself raises an exception to fail the pipeline\
+          \ run visibly \u2014 you'll see\n    a red step in the Vertex AI Pipelines\
+          \ UI and an alert fires (if you wired\n    Cloud Monitoring to the pipeline\
+          \ experiment).\n\n    Why have a gate at all? Without it, a corrupt PDF\
+          \ batch lowers retrieval\n    quality \u2192 evaluation scores drop \u2192\
+          \ fine-tuning amplifies the bad signal.\n    The gate is the circuit breaker.\n\
+          \    \"\"\"\n    passed = groundedness_mean >= min_groundedness and coherence_mean\
+          \ >= min_coherence\n\n    if not passed:\n        msg = (\n            f\"\
+          Quality gate FAILED \u2014 \"\n            f\"groundedness {groundedness_mean:.2f}\
+          \ < {min_groundedness} \"\n            f\"or coherence {coherence_mean:.2f}\
+          \ < {min_coherence}. \"\n            f\"Halting pipeline to prevent degraded\
+          \ deployment.\"\n        )\n        print(msg)\n        raise RuntimeError(msg)\n\
+          \n    print(f\"Quality gate PASSED \u2014 groundedness {groundedness_mean:.2f},\
+          \ coherence {coherence_mean:.2f}\")\n    return True\n\n"
+        image: python:3.11-slim
+    exec-run-evaluation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - run_evaluation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform[evaluation]>=1.60'\
+          \ 'langchain>=0.3' 'langchain-google-vertexai>=2.0' 'langchain-google-community[bigquery]>=2.0'\
+          \ 'pandas>=2.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef run_evaluation(\n    gcp_project_id: str,\n    gcp_region: str,\n\
+          \    bq_dataset: str,\n    bq_table: str,\n    gemini_model: str,\n    eval_metrics:\
+          \ Output[Metrics],\n) -> NamedTuple(\"EvalScores\", groundedness_mean=float,\
+          \ coherence_mean=float, fluency_mean=float):\n    \"\"\"\n    Run the Phase\
+          \ 3 evaluation suite and emit metric artifacts + scalar outputs.\n\n   \
+          \ In KFP v2 there are two ways to pass data between components:\n      -\
+          \ Output[Metrics]: writes values into an artifact file visible in the\n\
+          \        pipeline UI as trend charts across runs (used here for the dashboard).\n\
+          \      - NamedTuple return: exposes scalar values as named pipeline ports\
+          \ that\n        downstream components (quality_gate, dsl.Condition) can\
+          \ read directly.\n\n    Both are needed: the Metrics artifact feeds the\
+          \ dashboard; the NamedTuple\n    scalars feed the quality gate and the fine-tuning\
+          \ condition check.\n    \"\"\"\n    import os\n    import pandas as pd\n\
+          \    import vertexai\n    from vertexai.evaluation import EvalTask, PointwiseMetric\n\
+          \n    vertexai.init(project=gcp_project_id, location=gcp_region)\n\n   \
+          \ # Golden dataset (same as phase3/eval_dataset.py)\n    GOLDEN = [\n  \
+          \      {\n            \"prompt\": \"What are the lawful bases for processing\
+          \ personal data under GDPR?\",\n            \"reference\": \"Article 6(1)\
+          \ lists six bases: consent, contract, legal obligation, vital interests,\
+          \ public task, and legitimate interests.\",\n        },\n        {\n   \
+          \         \"prompt\": \"When is a Data Protection Officer (DPO) required\
+          \ under GDPR?\",\n            \"reference\": \"Article 37 requires a DPO\
+          \ for public authorities, organisations doing large-scale systematic monitoring,\
+          \ or large-scale processing of special category data.\",\n        },\n \
+          \       {\n            \"prompt\": \"What are the data subject rights under\
+          \ GDPR?\",\n            \"reference\": \"Articles 15\u201322 grant rights\
+          \ to access, rectification, erasure, restriction, portability, objection,\
+          \ and rights regarding automated decision-making.\",\n        },\n     \
+          \   {\n            \"prompt\": \"What is the maximum fine for GDPR violations?\"\
+          ,\n            \"reference\": \"Article 83 sets upper limits at \u20AC20M\
+          \ or 4% of global annual turnover (whichever is higher) for the most serious\
+          \ infringements.\",\n        },\n        {\n            \"prompt\": \"What\
+          \ must a breach notification to the supervisory authority contain?\",\n\
+          \            \"reference\": \"Article 33(3): nature of the breach, categories\
+          \ and number of data subjects, likely consequences, and measures taken or\
+          \ proposed.\",\n        },\n    ]\n\n    # Retrieve context from BigQuery\
+          \ for each question (simplified retriever)\n    from google.cloud import\
+          \ bigquery\n\n    bq = bigquery.Client(project=gcp_project_id)\n\n    def\
+          \ retrieve_context(question: str) -> str:\n        query = f\"\"\"\n   \
+          \         SELECT content\n            FROM VECTOR_SEARCH(\n            \
+          \    TABLE `{gcp_project_id}.{bq_dataset}.{bq_table}`,\n               \
+          \ 'embedding',\n                (SELECT ml_generate_embedding_result AS\
+          \ embedding\n                 FROM ML.GENERATE_EMBEDDING(\n            \
+          \         MODEL `{gcp_project_id}.{bq_dataset}.embedding_model`,\n     \
+          \                (SELECT @question AS content)\n                 )),\n \
+          \               top_k => 3\n            )\n        \"\"\"\n        # Fallback:\
+          \ just return a placeholder if table not populated\n        try:\n     \
+          \       rows = list(bq.query(query, job_config=bigquery.QueryJobConfig(\n\
+          \                query_parameters=[bigquery.ScalarQueryParameter(\"question\"\
+          , \"STRING\", question)]\n            )).result())\n            return \"\
+          \\n\\n\".join(r.content for r in rows) if rows else \"No context retrieved.\"\
+          \n        except Exception:\n            return \"No context retrieved.\"\
+          \n\n    # Build eval dataframe\n    records = []\n    for ex in GOLDEN:\n\
+          \        context = retrieve_context(ex[\"prompt\"])\n        records.append({\n\
+          \            \"prompt\": ex[\"prompt\"],\n            \"reference\": ex[\"\
+          reference\"],\n            \"context\": context,\n        })\n    df = pd.DataFrame(records)\n\
+          \n    # Custom groundedness metric (same template as phase3/eval_runner.py)\n\
+          \    GROUNDEDNESS_TEMPLATE = \"\"\"\nYou are evaluating the groundedness\
+          \ of an AI response about GDPR.\n\nQuestion: {prompt}\nRetrieved context:\
+          \ {context}\nAI Response: {response}\n\nScore from 1\u20135:\n5 = Every\
+          \ claim is directly supported by the context\n4 = Mostly supported, minor\
+          \ unsupported details\n3 = Partially supported; some claims lack support\n\
+          2 = Mostly unsupported, though not contradicted\n1 = Claims contradict or\
+          \ ignore the context\n\nOutput JSON: {{\"score\": <int>, \"explanation\"\
+          : \"<str>\"}}\n\"\"\".strip()\n\n    groundedness = PointwiseMetric(\n \
+          \       metric=\"groundedness\",\n        metric_prompt_template=GROUNDEDNESS_TEMPLATE,\n\
+          \    )\n\n    # Run evaluation in BYOR mode (we supply context column, no\
+          \ model inference)\n    eval_task = EvalTask(\n        dataset=df,\n   \
+          \     metrics=[groundedness, \"coherence\", \"fluency\"],\n        experiment=f\"\
+          gdpr-pipeline-eval\",\n    )\n    result = eval_task.evaluate()\n\n    summary\
+          \ = result.summary_metrics\n    g_mean = summary.get(\"groundedness/mean\"\
+          , 0.0)\n    c_mean = summary.get(\"coherence/mean\", 0.0)\n    f_mean =\
+          \ summary.get(\"fluency/mean\", 0.0)\n\n    # Log into Metrics artifact\
+          \ for the pipeline dashboard (trend charts)\n    eval_metrics.log_metric(\"\
+          groundedness_mean\", g_mean)\n    eval_metrics.log_metric(\"coherence_mean\"\
+          , c_mean)\n    eval_metrics.log_metric(\"fluency_mean\", f_mean)\n\n   \
+          \ print(f\"Eval results \u2014 groundedness: {g_mean:.2f}, coherence: {c_mean:.2f},\
+          \ fluency: {f_mean:.2f}\")\n\n    # Return scalars as a NamedTuple so downstream\
+          \ components and dsl.Condition\n    # can read them as typed pipeline ports\
+          \ (not just artifact files).\n    from collections import namedtuple\n \
+          \   EvalScores = namedtuple(\"EvalScores\", [\"groundedness_mean\", \"coherence_mean\"\
+          , \"fluency_mean\"])\n    return EvalScores(groundedness_mean=g_mean, coherence_mean=c_mean,\
+          \ fluency_mean=f_mean)\n\n"
+        image: python:3.11-slim
+    exec-trigger-finetuning:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - trigger_finetuning
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform>=1.60'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef trigger_finetuning(\n    gcp_project_id: str,\n    gcp_region:\
+          \ str,\n    gcs_bucket: str,\n    finetune_model: Output[Model],\n) -> None:\n\
+          \    \"\"\"\n    Submits the Phase 5 Vertex AI Training job for LoRA fine-tuning.\n\
+          \n    This component only runs inside a dsl.Condition block \u2014 the pipeline\n\
+          \    triggers fine-tuning only when eval scores drop below a second (lower)\n\
+          \    threshold, indicating the base model needs domain adaptation.\n\n \
+          \   The `finetune_model` Output[Model] artifact stores the GCS URI of the\n\
+          \    adapter checkpoint in Vertex AI's lineage graph, so you can always\
+          \ trace\n    which pipeline run produced which model version.\n\n    \u26A0\
+          \uFE0F  Cost: ~$0.40 (T4 GPU, 45 min). Requires GPU quota increase.\n  \
+          \      See phase5/vertex_job.py for quota request instructions.\n    \"\"\
+          \"\n    import vertexai\n    from google.cloud.aiplatform import CustomTrainingJob\n\
+          \n    vertexai.init(project=gcp_project_id, location=gcp_region)\n\n   \
+          \ from google.cloud import aiplatform\n    aiplatform.init(\n        project=gcp_project_id,\n\
+          \        location=gcp_region,\n        staging_bucket=f\"gs://{gcs_bucket}\"\
+          ,\n    )\n\n    output_gcs = f\"gs://{gcs_bucket}/phase5/pipeline-adapter\"\
+          \n\n    job = CustomTrainingJob(\n        display_name=\"gdpr-lora-finetune-pipeline\"\
+          ,\n        script_path=\"phase5/train.py\",\n        container_uri=\"us-docker.pkg.dev/vertex-ai/training/pytorch-gpu.2-1.py310:latest\"\
+          ,\n        requirements=[\"peft>=0.10\", \"trl>=0.8\", \"bitsandbytes>=0.43\"\
+          , \"datasets>=2.18\", \"accelerate>=0.28\"],\n        model_serving_container_image_uri=None,\n\
+          \    )\n\n    job.run(\n        args=[],\n        environment_variables={\n\
+          \            \"MODEL_ID\": \"Qwen/Qwen2.5-0.5B-Instruct\",\n           \
+          \ \"DATASET_PATH\": f\"gs://{gcs_bucket}/phase5/data/gdpr_finetune.jsonl\"\
+          ,\n            \"OUTPUT_DIR\": \"/tmp/gdpr-lora-adapter\",\n           \
+          \ \"GCS_OUTPUT_URI\": output_gcs,\n            \"EPOCHS\": \"2\",\n    \
+          \        \"BATCH_SIZE\": \"4\",\n        },\n        machine_type=\"n1-standard-4\"\
+          ,\n        accelerator_type=\"NVIDIA_TESLA_T4\",\n        accelerator_count=1,\n\
+          \        base_output_dir=output_gcs,\n        sync=True,\n    )\n\n    #\
+          \ Record the artifact URI in the lineage graph\n    finetune_model.uri =\
+          \ output_gcs\n    print(f\"Fine-tuning complete. Adapter at {output_gcs}\"\
+          )\n\n"
+        image: python:3.11-slim
+pipelineInfo:
+  description: "Ingest GDPR documents \u2192 evaluate retrieval quality \u2192 quality\
+    \ gate \u2192 conditionally trigger LoRA fine-tuning. Designed for nightly scheduling\
+    \ via Vertex AI Pipelines."
+  name: gdpr-agent-lifecycle
+root:
+  dag:
+    tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - quality-gate
+        - run-evaluation
+        inputs:
+          parameters:
+            pipelinechannel--finetune_trigger_threshold:
+              componentInputParameter: finetune_trigger_threshold
+            pipelinechannel--gcp_project_id:
+              componentInputParameter: gcp_project_id
+            pipelinechannel--gcp_region:
+              componentInputParameter: gcp_region
+            pipelinechannel--gcs_bucket:
+              componentInputParameter: gcs_bucket
+            pipelinechannel--run-evaluation-groundedness_mean:
+              taskOutputParameter:
+                outputParameterKey: groundedness_mean
+                producerTask: run-evaluation
+        taskInfo:
+          name: scores-degraded
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--run-evaluation-groundedness_mean']
+            < inputs.parameter_values['pipelinechannel--finetune_trigger_threshold']
+      ingest-documents:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-ingest-documents
+        inputs:
+          parameters:
+            bq_dataset:
+              componentInputParameter: bq_dataset
+            bq_table:
+              componentInputParameter: bq_table
+            embedding_model:
+              componentInputParameter: embedding_model
+            gcp_project_id:
+              componentInputParameter: gcp_project_id
+            gcp_region:
+              componentInputParameter: gcp_region
+            gcs_pdf_uri:
+              componentInputParameter: gcs_pdf_uri
+        taskInfo:
+          name: ingest-documents
+      quality-gate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-quality-gate
+        dependentTasks:
+        - run-evaluation
+        inputs:
+          parameters:
+            coherence_mean:
+              taskOutputParameter:
+                outputParameterKey: coherence_mean
+                producerTask: run-evaluation
+            groundedness_mean:
+              taskOutputParameter:
+                outputParameterKey: groundedness_mean
+                producerTask: run-evaluation
+            min_coherence:
+              componentInputParameter: min_coherence
+            min_groundedness:
+              componentInputParameter: min_groundedness
+        taskInfo:
+          name: quality-gate
+      run-evaluation:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-run-evaluation
+        dependentTasks:
+        - ingest-documents
+        inputs:
+          parameters:
+            bq_dataset:
+              componentInputParameter: bq_dataset
+            bq_table:
+              componentInputParameter: bq_table
+            gcp_project_id:
+              componentInputParameter: gcp_project_id
+            gcp_region:
+              componentInputParameter: gcp_region
+            gemini_model:
+              componentInputParameter: gemini_model
+        taskInfo:
+          name: run-evaluation
+  inputDefinitions:
+    parameters:
+      bq_dataset:
+        defaultValue: gdpr_agent
+        isOptional: true
+        parameterType: STRING
+      bq_table:
+        defaultValue: document_chunks
+        isOptional: true
+        parameterType: STRING
+      embedding_model:
+        defaultValue: text-embedding-004
+        isOptional: true
+        parameterType: STRING
+      finetune_trigger_threshold:
+        defaultValue: 3.0
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      gcp_project_id:
+        parameterType: STRING
+      gcp_region:
+        defaultValue: europe-west4
+        isOptional: true
+        parameterType: STRING
+      gcs_bucket:
+        defaultValue: your-bucket
+        isOptional: true
+        parameterType: STRING
+      gcs_pdf_uri:
+        defaultValue: gs://your-bucket/gdpr-docs/
+        isOptional: true
+        parameterType: STRING
+      gemini_model:
+        defaultValue: gemini-2.0-flash-lite
+        isOptional: true
+        parameterType: STRING
+      min_coherence:
+        defaultValue: 3.5
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      min_groundedness:
+        defaultValue: 3.5
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

@@ -37,6 +37,14 @@ dev = [
     "ipython",
     "pytest>=8.0",
 ]
+# Phase 6 — Vertex AI Pipelines (KFP SDK)
+# Install with: pip install -e ".[pipelines]"
+pipelines = [
+    "kfp>=2.7",
+    "google-cloud-pipeline-components>=2.0",
+    "google-cloud-resource-manager>=1.12",
+]
+
 # Phase 5 — training dependencies (heavy, GPU-only, not needed for inference)
 # Install with: pip install -e ".[train]"
 train = [

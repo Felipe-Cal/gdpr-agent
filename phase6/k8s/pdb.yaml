@@ -1,0 +1,28 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vllm-mistral
+  namespace: gdpr-serving
+spec:
+  # Ensure at least 1 pod is always available during voluntary disruptions
+  # (node upgrades, cluster autoscaler scale-down, rolling deployments).
+  #
+  # Why this matters for a GPU serving workload:
+  # ─────────────────────────────────────────────
+  # When the Cluster Autoscaler decides to drain a node (e.g., because
+  # the node has been underutilised for 10+ minutes), it evicts pods one
+  # by one. Without a PDB, it can evict the single vLLM pod while the
+  # replacement is still loading the 7B model (30–60 seconds of downtime).
+  #
+  # With minAvailable=1, the Cluster Autoscaler will not evict the pod
+  # unless it can verify that at least 1 replica remains Running and Ready.
+  # For a single-replica deployment (HPA minReplicas=1), this effectively
+  # prevents scale-down of the node hosting vLLM — the Cluster Autoscaler
+  # marks the node as "not safe to drain" and leaves it alone.
+  #
+  # In a multi-replica deployment (e.g., HPA scaled to 2), minAvailable=1
+  # allows the autoscaler to drain one pod at a time while serving continues.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: vllm-mistral

@@ -1,0 +1,36 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vllm-mistral
+  namespace: gdpr-serving
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-mistral
+
+  updatePolicy:
+    # "Off" = recommend only, do not evict pods automatically.
+    # For GPU workloads, evicting a pod means a 30–60s model reload —
+    # unacceptable for a latency-sensitive serving endpoint.
+    # In "Off" mode, VPA calculates the right CPU/memory requests and
+    # reports them as recommendations in `kubectl describe vpa vllm-mistral`.
+    # You then apply them during the next planned maintenance window.
+    updateMode: "Off"
+
+  resourcePolicy:
+    containerPolicies:
+      - containerName: vllm
+        # Never let VPA reduce memory below what Mistral-7B-AWQ needs to load.
+        # AWQ quantized model: ~4GB weights + ~2GB KV cache = 6GB minimum.
+        # The T4 has 16GB; allowing up to 14GB leaves headroom for the OS.
+        minAllowed:
+          memory: "6Gi"
+          cpu: "2"
+        maxAllowed:
+          memory: "14Gi"
+          cpu: "8"
+        controlledResources: ["memory", "cpu"]
+        # GPU resources are not controlled by VPA — they are fixed by the
+        # model architecture (Mistral-7B needs exactly 1 T4). GPU count
+        # is managed by the Deployment spec directly.

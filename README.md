@@ -21,7 +21,7 @@ The GDPR domain is intentional. Privacy and data sovereignty are first-class con
 | 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | ✅ Built |
 | 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | ✅ Built |
 | 5 | Fine-tuning | LoRA, PyTorch/XLA, JAX on Cloud TPU, Vertex AI Training | ✅ Built |
-| 6 | Production MLOps | Vertex AI Pipelines, GKE autoscaling, VPC-SC / CMEK for GDPR | 🔜 Coming |
+| 6 | Production MLOps | Vertex AI Pipelines, GKE autoscaling, VPC-SC / CMEK for GDPR | ✅ Built |
 
 See [`docs/phases-overview.md`](docs/phases-overview.md) for the detailed forward-looking plan.
 
@@ -67,11 +67,23 @@ gdpr-agent/
 │       ├── service.yaml         # LoadBalancer service
 │       └── hpa.yaml             # Horizontal Pod Autoscaler
 │
+├── phase6/
+│   ├── pipeline.py              # KFP pipeline: ingest → eval → quality gate → fine-tune
+│   ├── submit.py                # Compile + submit pipeline to Vertex AI (with scheduling)
+│   ├── kms.py                   # CMEK setup: Cloud KMS keyring, key, BigQuery patch
+│   ├── vpc_sc.sh                # VPC Service Controls perimeter setup (gcloud)
+│   ├── main.py                  # CLI: compile, submit, kms-setup, kms-patch-bq
+│   └── k8s/
+│       ├── vpa.yaml             # VerticalPodAutoscaler (Off mode — recommend only)
+│       └── pdb.yaml             # PodDisruptionBudget (minAvailable=1 for safe drain)
+│
 ├── docs/
 │   ├── phase1.md                # Deep-dive on Phase 1 architecture and concepts
 │   ├── phase2.md                # Deep-dive on Phase 2: LangGraph, ADK, tools, ReAct
 │   ├── phase3.md                # Deep-dive on Phase 3: tracing, eval, LLM-as-judge
 │   ├── phase4.md                # Deep-dive on Phase 4: vLLM, AWQ, GKE, cost benchmarking
+│   ├── phase5.md                # Deep-dive on Phase 5: LoRA, JAX/TPU, adapter merging
+│   ├── phase6.md                # Deep-dive on Phase 6: pipelines, CMEK, VPC-SC, autoscaling
 │   └── phases-overview.md       # Forward-looking plan for all 6 phases
 │
 └── data/
@@ -217,4 +229,7 @@ This section maps each phase to specific competencies that come up in senior GCP
 
 ### Phase 6 — Production MLOps
 
-- Vertex AI Pipelines, GKE node pool autoscaling, VPC Service Controls for data exfiltration protection, and CMEK (Customer-Managed Encryption Keys) — all directly relevant to regulated-industry AI deployments.
+- **Vertex AI Pipelines / KFP**: authoring `@component` / `@pipeline` decorated functions, artifact lineage in Vertex ML Metadata, pipeline caching, `dsl.Condition` for runtime branching, nightly scheduling.
+- **GKE autoscaling trio**: HPA (pod count), VPA (resource right-sizing), Cluster Autoscaler (node provisioning), PodDisruptionBudget (safe drain for GPU pods). Can explain when each triggers and how they interact.
+- **VPC Service Controls**: service perimeter, access levels, ingress rules for Vertex AI Pipelines SA, and why VPC-SC addresses a different threat model than IAM alone (stolen credentials vs. unauthorized identity).
+- **CMEK and cryptographic erasure**: Cloud KMS key hierarchy, rotation, and how CMEK implements GDPR Article 17 (right to erasure) at the infrastructure level without per-row deletion tracking.

@@ -33,6 +33,8 @@ Submit to Vertex AI (⚠️ costs money — see phase6/submit.py for estimates):
     python -m phase6.submit --bucket your-gcs-bucket
 """
 
+from typing import NamedTuple
+
 from kfp import dsl, compiler
 from kfp.dsl import Input, Output, Dataset, Metrics, Model
 
@@ -161,18 +163,18 @@ def run_evaluation(
     bq_table: str,
     gemini_model: str,
     eval_metrics: Output[Metrics],
-) -> None:
+) -> NamedTuple("EvalScores", groundedness_mean=float, coherence_mean=float, fluency_mean=float):
     """
-    Run the Phase 3 evaluation suite and emit metric artifacts.
+    Run the Phase 3 evaluation suite and emit metric artifacts + scalar outputs.
 
-    Uses the 10-pair golden dataset from phase3/eval_dataset.py and the same
-    custom PointwiseMetric (LLM-as-judge) that fixed the groundedness=0 bug
-    in Phase 3. Outputs are KFP Metrics artifacts — visible in the Vertex AI
-    Pipelines UI as charts across pipeline runs, so you can see metric trends
-    over time without writing a separate dashboard.
+    In KFP v2 there are two ways to pass data between components:
+      - Output[Metrics]: writes values into an artifact file visible in the
+        pipeline UI as trend charts across runs (used here for the dashboard).
+      - NamedTuple return: exposes scalar values as named pipeline ports that
+        downstream components (quality_gate, dsl.Condition) can read directly.
 
-    The eval runs inside the pipeline container so it inherits the same
-    workload identity as the rest of the pipeline — no extra credentials needed.
+    Both are needed: the Metrics artifact feeds the dashboard; the NamedTuple
+    scalars feed the quality gate and the fine-tuning condition check.
     """
     import os
     import pandas as pd
@@ -280,11 +282,18 @@ Output JSON: {{"score": <int>, "explanation": "<str>"}}
     c_mean = summary.get("coherence/mean", 0.0)
     f_mean = summary.get("fluency/mean", 0.0)
 
+    # Log into Metrics artifact for the pipeline dashboard (trend charts)
     eval_metrics.log_metric("groundedness_mean", g_mean)
     eval_metrics.log_metric("coherence_mean", c_mean)
     eval_metrics.log_metric("fluency_mean", f_mean)
 
     print(f"Eval results — groundedness: {g_mean:.2f}, coherence: {c_mean:.2f}, fluency: {f_mean:.2f}")
+
+    # Return scalars as a NamedTuple so downstream components and dsl.Condition
+    # can read them as typed pipeline ports (not just artifact files).
+    from collections import namedtuple
+    EvalScores = namedtuple("EvalScores", ["groundedness_mean", "coherence_mean", "fluency_mean"])
+    return EvalScores(groundedness_mean=g_mean, coherence_mean=c_mean, fluency_mean=f_mean)
 
 
 # ---------------------------------------------------------------------------
@@ -477,10 +486,10 @@ def gdpr_agent_pipeline(
     )
 
     # Step 4 (conditional): Trigger fine-tuning only if scores are degraded
-    # dsl.Condition runs the inner block only when the predicate holds.
+    # dsl.If runs the inner block only when the predicate holds.
     # This uses KFP's runtime condition evaluation — the predicate is checked
     # after quality_gate runs, not at compile time.
-    with dsl.Condition(
+    with dsl.If(
         eval_task.outputs["groundedness_mean"] < finetune_trigger_threshold,
         name="scores-degraded",
     ):

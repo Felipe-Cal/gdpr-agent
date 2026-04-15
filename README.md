@@ -20,7 +20,7 @@ The GDPR domain is intentional. Privacy and data sovereignty are first-class con
 | 2 | Agentic Workflows | LangGraph, Google Agent Development Kit (ADK), ReAct / reflection patterns | ✅ Built |
 | 3 | Observability & Eval | LangFuse (on Cloud Run), LangSmith, Vertex AI Evaluation | ✅ Built |
 | 4 | Self-hosted Serving | vLLM on GKE, quantization (GPTQ/AWQ), cost benchmarking | ✅ Built |
-| 5 | Fine-tuning | LoRA, PyTorch/XLA, JAX on Cloud TPU, Vertex AI Training | 🔜 Coming |
+| 5 | Fine-tuning | LoRA, PyTorch/XLA, JAX on Cloud TPU, Vertex AI Training | ✅ Built |
 | 6 | Production MLOps | Vertex AI Pipelines, GKE autoscaling, VPC-SC / CMEK for GDPR | 🔜 Coming |
 
 See [`docs/phases-overview.md`](docs/phases-overview.md) for the detailed forward-looking plan.
